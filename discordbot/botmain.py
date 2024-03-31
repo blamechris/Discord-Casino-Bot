@@ -6,7 +6,7 @@ import os
 # Enable default intents
 intents = discord.Intents.default()
 
-# If your bot needs to track presences or members, you can enable those intents specifically (be mindful of the privacy implications and the need to enable these in the Discord Developer Portal as well):
+# If the bot needs to track presences or members, we can enable those intents specifically:
 # intents.presences = True
 # intents.members = True
 
@@ -15,7 +15,7 @@ bot = commands.Bot(command_prefix='!', intents=intents) #initialize bot using '!
 # Connect to the MongoDB server running on localhost
 client = MongoClient('mongodb://localhost:27017/')
 
-# Access the 'discord_bot_db' database
+# Access the 'discord_bot_db' database (Not yet setup)
 db = client['discord_bot_db']
 
 @bot.command()
