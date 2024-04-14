@@ -6,6 +6,7 @@ import random
 from dotenv import load_dotenv
 import os
 import asyncio
+from datetime import datetime, timedelta
 
 load_dotenv()  # This loads the environment variables from .env
 
@@ -20,68 +21,236 @@ db = mysql.connector.connect(
     password=os.environ.get('DB_PASSWORD', 'default_password'),  # Fallback to 'default_password' if not set
     database=os.environ.get('DB_NAME', 'default_database')  # Fallback to 'default_database' if not set
 )
+print("Connected to the database successfully!, db = ", db)
 cursor = db.cursor(dictionary=True)
 
-@bot.command()
+@bot.command(help="Create an account to start playing games and rank.")
 async def createaccount(ctx):
     # Add user to the database
     query = "INSERT INTO users (discord_id, username) VALUES (%s, %s)"
     cursor.execute(query, (ctx.author.id, str(ctx.author)))
     db.commit()
     await ctx.send("Account created successfully!")
+    print("createaccount called")
 
-@bot.command()
+@bot.command(help="Displays your current stats, username, and your rank based on the account creation order (Will update to track highscore stuff).")
 async def mystats(ctx):
-    query = "SELECT * FROM users WHERE discord_id = %s"
+    query = """
+    SELECT a.discord_id, a.username, a.chip_count, wins, losses, last_withdrawal, 
+           ROW_NUMBER() OVER (ORDER BY a.discord_id) AS user_rank
+    FROM users a
+    WHERE a.discord_id = %s;
+    """
     cursor.execute(query, (ctx.author.id,))
     user_data = cursor.fetchone()
-    
-    if user_data:
-        await ctx.send(f"Your stats: Chips: {user_data['chip_count']}")
-    else:
-        await ctx.send("You don't have an account. Please create one using !createaccount.")
-    print("mystats")
 
-@bot.command()
-async def blackjack(ctx):
-    shuffle_deck()  # Make sure the deck is shuffled before each game
+    if not user_data:
+        await ctx.send("You don't have an account. Please create one using !createaccount.")
+        return
     
+    wins = user_data['wins']
+    losses = user_data['losses']
+    total_games = wins + losses
+    win_percentage = (wins / total_games * 100) if total_games > 0 else 0
+
+    last_withdrawal = user_data['last_withdrawal']
+    last_withdrawal_str = last_withdrawal.strftime("%Y-%m-%d %H:%M:%S") if last_withdrawal else "Never"
+    response = (f"Username: {ctx.author}\n"
+                f"Chips: {user_data['chip_count']}\n"
+                f"Wins: {wins}\n"
+                f"Losses: {losses}\n"
+                f"Total games played: {total_games}\n"
+                f"Win percentage: {win_percentage:.2f}%\n"
+                f"Last withdrawal: {last_withdrawal_str}")
+    await ctx.send(response)
+
+    print("mystats called")
+
+@bot.command(help="Displays the leaderboard. Choose W for wins, L for losses, T for total games, or C for chip count.")
+async def leaderboard(ctx):
+    # Prompt user for the type of leaderboard they want to see
+    leaderboard_message = ("Please choose a leaderboard:\n"
+                           "`W` - Top 5 by Wins\n"
+                           "`L` - Top 5 by Losses\n"
+                           "`T` - Top 5 by Total Games Played\n"
+                           "`C` - Top 5 by Chip Count")
+    await ctx.send(leaderboard_message)
+
+    # Check function to ensure the response is from the same user and in the same channel
+    def check(m):
+        return m.author == ctx.author and m.channel == ctx.channel and m.content.upper() in ['W', 'L', 'T', 'C']
+
+    try:
+        msg = await bot.wait_for('message', check=check, timeout=30.0)  # 30 seconds to reply
+    except asyncio.TimeoutError:
+        await ctx.send("You took too long to respond.")
+        return
+
+    # Query based on user input
+    selection = msg.content.upper()
+    if selection == 'W':
+        query = """
+        SELECT username, wins FROM users ORDER BY wins DESC LIMIT 5
+        """
+    elif selection == 'L':
+        query = """
+        SELECT username, losses FROM users ORDER BY losses DESC LIMIT 5
+        """
+    elif selection == 'T':
+        query = """
+        SELECT username, (wins + losses) AS total_games FROM users ORDER BY total_games DESC LIMIT 5
+        """
+    elif selection == 'C':
+        query = """
+        SELECT username, chip_count FROM users ORDER BY chip_count DESC LIMIT 5
+        """
+
+    # Execute the query and fetch results
+    cursor.execute(query)
+    results = cursor.fetchall()
+    if not results:
+        await ctx.send("No data found for the selected category.")
+        return
+
+    # Format and send the leaderboard
+    leaderboard_title = f"Top 5 Players by {'Wins' if selection == 'W' else 'Losses' if selection == 'L' else 'Total Games' if selection == 'T' else 'Chip Count'}"
+    leaderboard_content = "\n".join([f"{idx + 1}. {result['username']} - {result[list(result.keys())[1]]}" for idx, result in enumerate(results)])
+    await ctx.send(f"**{leaderboard_title}**\n{leaderboard_content}")
+
+
+@bot.command(help="Withdraw 1000 chips once every hour.")
+async def withdraw(ctx):
+    current_time = datetime.utcnow()
+    user_id = ctx.author.id
+
+    # Fetch the last withdrawal time and chip count
+    query = "SELECT chip_count, last_withdrawal FROM users WHERE discord_id = %s"
+    cursor.execute(query, (user_id,))
+    user_data = cursor.fetchone()
+
+    if not user_data:
+        await ctx.send("You don't have an account. Please create one using !createaccount.")
+        return
+
+    last_withdrawal = user_data['last_withdrawal']
+    can_withdraw = (last_withdrawal is None or current_time - last_withdrawal >= timedelta(hours=1))
+
+    if can_withdraw:
+        # Update chip count and last withdrawal timestamp
+        new_chips = user_data['chip_count'] + 1000
+        update_query = """
+        UPDATE users SET chip_count = %s, last_withdrawal = %s WHERE discord_id = %s
+        """
+        cursor.execute(update_query, (new_chips, current_time, user_id))
+        db.commit()
+        await ctx.send("You have successfully withdrawn 1000 chips!")
+    else:
+        # Calculate time remaining until the next possible withdrawal
+        time_remaining = timedelta(hours=1) - (current_time - last_withdrawal)
+        minutes, seconds = divmod(time_remaining.seconds, 60)
+        await ctx.send(f"You must wait {minutes} minutes and {seconds} seconds before you can withdraw again.")
+    print("withdraw called")
+
+@bot.command(help="Starts a game of blackjack. You must wager some of your chips.")
+async def blackjack(ctx, wager: int = 0):
+    # Check if the wager was provided
+    if wager is None:
+        await ctx.send("Please include a wager amount with the command. Example: `!blackjack 50`")
+        return
+
+    # Check if the wager is a valid number
+    if wager <= 0:
+        await ctx.send("Your wager must be a positive number.")
+        return
+
+    # Check if the user has an account and sufficient chips
+    check_query = "SELECT chip_count FROM users WHERE discord_id = %s"
+    cursor.execute(check_query, (ctx.author.id,))
+    result = cursor.fetchone()
+    
+    if not result:
+        await ctx.send("You don't have an account. Please create one using !createaccount.")
+        return
+
+    if result['chip_count'] < wager or wager <= 0:
+        await ctx.send("You do not have enough chips or your wager is invalid.")
+        return
+
+    # Start the game
+    shuffle_deck()
     player_hand = [draw_card(), draw_card()]
     dealer_hand = [draw_card(), draw_card()]
 
-    await ctx.send(f"Your hand: {player_hand[0]}, {player_hand[1]}. Do you want to 'hit' or 'stand'?")
-    
-    def check(m):
-        return m.author == ctx.author and m.content.lower() in ["hit", "stand"]
-    
-    try:
-        msg = await bot.wait_for('message', check=check, timeout=30.0)  # Wait for player's response
-    except asyncio.TimeoutError:
-        await ctx.send("Sorry, you took too long to respond. Game over.")
+    await show_hands(ctx, player_hand, dealer_hand, initial=True)
+
+    # Player's turn
+    player_value = calculate_hand_value(player_hand)
+    if player_value == 21:
+        await end_game(ctx, player_hand, dealer_hand, wager)
         return
 
-    while msg.content.lower() == "hit":
-        player_hand.append(draw_card())
-        player_value = calculate_hand_value(player_hand)
-        if player_value > 21:
-            await ctx.send(f"Card drawn: {player_hand[-1]}. Total: {player_value}. You busted!")
-            return
-        elif player_value == 21:
-            await ctx.send(f"Card drawn: {player_hand[-1]}. Total: {player_value}. Blackjack!")
+    while True:
+        choice = await ctx.send(f"Your hand: {', '.join(map(str, player_hand))} ({player_value}). Do you want to 'hit' or 'stand'?")
+        msg = await bot.wait_for('message', check=lambda m: m.author == ctx.author and m.content.lower() in ['hit', 'stand'])
+
+        if msg.content.lower() == 'stand':
             break
-        else:
-            await ctx.send(f"Card drawn: {player_hand[-1]}. Total: {player_value}. Do you want to 'hit' or 'stand'?")
-            try:
-                msg = await bot.wait_for('message', check=check, timeout=30.0)
-            except asyncio.TimeoutError:
-                await ctx.send("Sorry, you took too long to respond. Game over.")
+
+        if msg.content.lower() == 'hit':
+            player_hand.append(draw_card())
+            player_value = calculate_hand_value(player_hand)
+            if player_value > 21:
+                await ctx.send(f"You drew {player_hand[-1]}, and now have a total of {player_value}. You busted!")
+                change_chips(ctx.author.id, -wager)
                 return
+            elif player_value == 21:
+                await ctx.send(f"You drew {player_hand[-1]}, and now have a total of {player_value}.")
+                break
 
-    # Dealer's turn to draw cards
-    while calculate_hand_value(dealer_hand) < 17:
+    # Dealer's turn
+    dealer_value = calculate_hand_value(dealer_hand)
+    while dealer_value < 17:
         dealer_hand.append(draw_card())
+        dealer_value = calculate_hand_value(dealer_hand)
 
-    await end_game(ctx, player_hand, dealer_hand)
+    await show_hands(ctx, player_hand, dealer_hand, initial=False)
+    await end_game(ctx, player_hand, dealer_hand, wager)
+    print("blackjack called")
+
+async def show_hands(ctx, player_hand, dealer_hand, initial=False):
+    if initial:
+        dealer_display = f"{dealer_hand[0]}, Hidden"
+    else:
+        dealer_display = ', '.join(map(str, dealer_hand))
+    player_display = ', '.join(map(str, player_hand))
+    await ctx.send(f"Dealer's hand: {dealer_display}\nYour hand: {player_display}")
+
+async def end_game(ctx, player_hand, dealer_hand, wager):
+    player_value = calculate_hand_value(player_hand)
+    dealer_value = calculate_hand_value(dealer_hand)
+    result_message = ""
+
+    if player_value > 21:
+        result_message = f"You busted with a total of {player_value}. Dealer wins."
+        change_chips(ctx.author.id, -wager)
+    elif dealer_value > 21 or player_value > dealer_value:
+        if player_value == 21 and len(player_hand) == 2:  # Check for a blackjack
+            win_amount = int(1.5 * wager)
+            result_message = f"Blackjack! You win {win_amount} chips!"
+            change_chips(ctx.author.id, win_amount)
+        else:
+            result_message = f"You win! You had {player_value} and the dealer had {dealer_value}. You win {wager * 2} chips!"
+            change_chips(ctx.author.id, wager * 2)
+    else:
+        result_message = f"Dealer wins with {dealer_value} against your {player_value}."
+        change_chips(ctx.author.id, -wager)
+
+    await ctx.send(result_message)
+
+def change_chips(user_id, amount):
+    update_query = "UPDATE users SET chip_count = chip_count + %s WHERE discord_id = %s"
+    cursor.execute(update_query, (amount, user_id))
+    db.commit()
 
 suits = ['Spades', 'Hearts', 'Diamonds', 'Clubs']
 values = ['Ace', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'Jack', 'Queen', 'King']
@@ -124,15 +293,27 @@ def calculate_hand_value(hand):
 
     return value
 
-async def end_game(ctx, player_hand, dealer_hand):
+async def end_game(ctx, player_hand, dealer_hand, wager):
     player_value = calculate_hand_value(player_hand)
     dealer_value = calculate_hand_value(dealer_hand)
-    if player_value > 21:
-        await ctx.send(f"You busted with a total of {player_value}. Dealer wins.")
-    elif dealer_value > 21 or player_value > dealer_value:
-        await ctx.send(f"You win! You had {player_value} and the dealer had {dealer_value}.")
+    user_id = ctx.author.id
+
+    if player_value > 21 or (dealer_value <= 21 and dealer_value > player_value):
+        result_message = "You lost!"
+        update_stats = "UPDATE users SET losses = losses + 1, chip_count = chip_count - %s WHERE discord_id = %s"
+        update_values = (-wager, user_id)
+    elif player_value == 21 and len(player_hand) == 2 and dealer_value != 21:
+        result_message = "Blackjack! You win!"
+        update_stats = "UPDATE users SET wins = wins + 1, chip_count = chip_count + %s WHERE discord_id = %s"
+        update_values = (int(1.5 * wager), user_id)
     else:
-        await ctx.send(f"Dealer wins with {dealer_value} against your {player_value}.")
+        result_message = "You win!"
+        update_stats = "UPDATE users SET wins = wins + 1, chip_count = chip_count + %s WHERE discord_id = %s"
+        update_values = (wager * 2, user_id)
+
+    cursor.execute(update_stats, update_values)
+    db.commit()
+    await ctx.send(result_message)
 
 TOKEN = os.environ.get('BOT_TOKEN')
 
