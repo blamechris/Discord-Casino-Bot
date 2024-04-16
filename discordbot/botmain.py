@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import os
 import asyncio
 from datetime import datetime, timedelta
+from card_images import card_mapping
 
 load_dotenv()  # This loads the environment variables from .env
 
@@ -24,6 +25,7 @@ db = mysql.connector.connect(
 print("Connected to the database successfully!, db = ", db)
 cursor = db.cursor(dictionary=True)
 
+
 @bot.command(help="Create an account to start playing games and rank.")
 async def createaccount(ctx):
     # Add user to the database
@@ -32,6 +34,7 @@ async def createaccount(ctx):
     db.commit()
     await ctx.send("Account created successfully!")
     print("createaccount called")
+
 
 @bot.command(help="Displays your current stats, username, and your rank based on the account creation order (Will update to track highscore stuff).")
 async def mystats(ctx):
@@ -55,16 +58,19 @@ async def mystats(ctx):
 
     last_withdrawal = user_data['last_withdrawal']
     last_withdrawal_str = last_withdrawal.strftime("%Y-%m-%d %H:%M:%S") if last_withdrawal else "Never"
-    response = (f"Username: {ctx.author}\n"
-                f"Chips: {user_data['chip_count']}\n"
-                f"Wins: {wins}\n"
-                f"Losses: {losses}\n"
-                f"Total games played: {total_games}\n"
-                f"Win percentage: {win_percentage:.2f}%\n"
-                f"Last withdrawal: {last_withdrawal_str}")
-    await ctx.send(response)
+    # With an embed like this
+    embed = discord.Embed(title="Your Stats", color=discord.Color.green())
+    embed.add_field(name="Username", value=ctx.author, inline=True)
+    embed.add_field(name="Chips", value=user_data['chip_count'], inline=True)
+    embed.add_field(name="Wins", value=wins, inline=True)
+    embed.add_field(name="Losses", value=losses, inline=True)
+    embed.add_field(name="Total games played", value=total_games, inline=True)
+    embed.add_field(name="Win percentage", value=f"{win_percentage:.2f}%", inline=True)
+    embed.add_field(name="Last withdrawal", value=last_withdrawal_str, inline=True)
+    await ctx.send(embed=embed)
 
     print("mystats called")
+
 
 @bot.command(help="Displays the leaderboard. Choose W for wins, L for losses, T for total games, or C for chip count.")
 async def leaderboard(ctx):
@@ -115,7 +121,13 @@ async def leaderboard(ctx):
     # Format and send the leaderboard
     leaderboard_title = f"Top 5 Players by {'Wins' if selection == 'W' else 'Losses' if selection == 'L' else 'Total Games' if selection == 'T' else 'Chip Count'}"
     leaderboard_content = "\n".join([f"{idx + 1}. {result['username']} - {result[list(result.keys())[1]]}" for idx, result in enumerate(results)])
-    await ctx.send(f"**{leaderboard_title}**\n{leaderboard_content}")
+    
+    embed = discord.Embed(title=leaderboard_title, color=discord.Color.blue())
+    embed.add_field(name="Players", value=leaderboard_content, inline=False)
+
+    # Send the embed
+    await ctx.send(embed=embed)
+    print("leaderboard called")
 
 
 @bot.command(help="Withdraw 1000 chips once every hour.")
@@ -150,6 +162,18 @@ async def withdraw(ctx):
         minutes, seconds = divmod(time_remaining.seconds, 60)
         await ctx.send(f"You must wait {minutes} minutes and {seconds} seconds before you can withdraw again.")
     print("withdraw called")
+
+
+@bot.command(help="Shows the card images for a game of blackjack.")
+async def showcards(ctx, *, card_name: str):
+    # Assuming the card name is exactly as it appears in the dictionary
+    if card_name in card_mapping:
+        embed = discord.Embed(title=f"Here is your {card_name}", color=discord.Color.blue())
+        #embed.set_image(url=card_mapping[card_name])
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("Card not found. Please make sure the card name is correct.")
+
 
 @bot.command(help="Starts a game of blackjack. You must wager some of your chips.")
 async def blackjack(ctx, wager: int = 0):
