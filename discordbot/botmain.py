@@ -166,9 +166,7 @@ async def blackjack(ctx, wager: int = 0):
         return
 
     # Check if the user has an account and sufficient chips
-    check_query = "SELECT chip_count FROM users WHERE discord_id = %s"
-    db.cursor.execute(check_query, (ctx.author.id,))
-    result = db.cursor.fetchone()
+    result = db.get_player_stats(ctx.author.id)
     
     if not result:
         await ctx.send("You don't have an account. Please create one using !createaccount.")
@@ -203,7 +201,7 @@ async def blackjack(ctx, wager: int = 0):
             player_value = calculate_hand_value(player_hand)
             if player_value > 21:
                 await ctx.send(f"You drew {player_hand[-1]}, and now have a total of {player_value}. You busted!")
-                change_chips(ctx.author.id, -wager)
+                db.blackjack_result("LOSS", ctx.author.id, -wager)
                 return
             elif player_value == 21:
                 await ctx.send(f"You drew {player_hand[-1]}, and now have a total of {player_value}.")
@@ -234,25 +232,19 @@ async def end_game(ctx, player_hand, dealer_hand, wager):
 
     if player_value > 21:
         result_message = f"You busted with a total of {player_value}. Dealer wins."
-        change_chips(ctx.author.id, -wager)
+        db.blackjack_result("LOSS", ctx.author.id, -wager)
     elif dealer_value > 21 or player_value > dealer_value:
         if player_value == 21 and len(player_hand) == 2:  # Check for a blackjack
             win_amount = int(1.5 * wager)
             result_message = f"Blackjack! You win {win_amount} chips!"
-            change_chips(ctx.author.id, win_amount)
+            db.blackjack_result("WIN", ctx.author.id, win_amount)
         else:
             result_message = f"You win! You had {player_value} and the dealer had {dealer_value}. You win {wager * 2} chips!"
-            change_chips(ctx.author.id, wager * 2)
+            db.blackjack_result("WIN", ctx.author.id, wager*2)
     else:
         result_message = f"Dealer wins with {dealer_value} against your {player_value}."
-        change_chips(ctx.author.id, -wager)
-
+        db.blackjack_result("LOSS", ctx.author.id, -wager)
     await ctx.send(result_message)
-
-def change_chips(user_id, amount):
-    update_query = "UPDATE users SET chip_count = chip_count + %s WHERE discord_id = %s"
-    db.cursor.execute(update_query, (amount, user_id))
-    db.db.commit()
 
 suits = ['Spades', 'Hearts', 'Diamonds', 'Clubs']
 values = ['Ace', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'Jack', 'Queen', 'King']
@@ -316,10 +308,6 @@ async def end_game(ctx, player_hand, dealer_hand, wager):
         # update_values = (wager * 2, user_id)
         db.blackjack_result("WIN", user_id, wager * 2)
     
-    
-
-    # db.cursor.execute(update_stats, update_values)
-    # db.db.commit()
     await ctx.send(result_message)
 
 TOKEN = os.environ.get('BOT_TOKEN')

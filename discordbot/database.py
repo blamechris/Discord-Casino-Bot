@@ -76,3 +76,9 @@ class database:
         """
         self.cursor.execute(update_query, (timestamp, discord_id))
         self.db.commit()
+
+    # todo
+    #def get_leaderboard_overall(num_per_page, page):
+    #    query = 
+
+    #def get_leaderboard_blackjack():
