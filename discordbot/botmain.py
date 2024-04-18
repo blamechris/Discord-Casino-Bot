@@ -9,6 +9,8 @@ import asyncio
 from datetime import datetime, timedelta
 from card_images import card_mapping
 
+from database import *
+
 load_dotenv()  # This loads the environment variables from .env
 
 # Enable default intents
@@ -16,37 +18,19 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix='!', intents=intents) #initialize bot using '!' as prefix
 
 # Connect to the MySQL server using environment variables
-db = mysql.connector.connect(
-    host=os.environ.get('DB_HOST', 'default_host'),  # Fallback to 'default_host' if not set
-    user=os.environ.get('DB_USER', 'default_user'),  # Fallback to 'default_user' if not set
-    password=os.environ.get('DB_PASSWORD', 'default_password'),  # Fallback to 'default_password' if not set
-    database=os.environ.get('DB_NAME', 'default_database')  # Fallback to 'default_database' if not set
-)
-print("Connected to the database successfully!, db = ", db)
-cursor = db.cursor(dictionary=True)
+db = database()
 
 
 @bot.command(help="Create an account to start playing games and rank.")
 async def createaccount(ctx):
     # Add user to the database
-    query = "INSERT INTO users (discord_id, username) VALUES (%s, %s)"
-    cursor.execute(query, (ctx.author.id, str(ctx.author)))
-    db.commit()
-    await ctx.send("Account created successfully!")
+    db.create_account(ctx.author.id, ctx.author.name)
     print("createaccount called")
 
 
 @bot.command(help="Displays your current stats, username, and your rank based on the account creation order (Will update to track highscore stuff).")
 async def mystats(ctx):
-    query = """
-    SELECT a.discord_id, a.username, a.chip_count, wins, losses, last_withdrawal, 
-           ROW_NUMBER() OVER (ORDER BY a.discord_id) AS user_rank
-    FROM users a
-    WHERE a.discord_id = %s;
-    """
-    cursor.execute(query, (ctx.author.id,))
-    user_data = cursor.fetchone()
-
+    user_data = db.get_player_stats(ctx.author.id)
     if not user_data:
         await ctx.send("You don't have an account. Please create one using !createaccount.")
         return
@@ -112,8 +96,8 @@ async def leaderboard(ctx):
         """
 
     # Execute the query and fetch results
-    cursor.execute(query)
-    results = cursor.fetchall()
+    db.cursor.execute(query)
+    results = db.cursor.fetchall()
     if not results:
         await ctx.send("No data found for the selected category.")
         return
@@ -135,33 +119,27 @@ async def withdraw(ctx):
     current_time = datetime.utcnow()
     user_id = ctx.author.id
 
-    # Fetch the last withdrawal time and chip count
-    query = "SELECT chip_count, last_withdrawal FROM users WHERE discord_id = %s"
-    cursor.execute(query, (user_id,))
-    user_data = cursor.fetchone()
-
-    if not user_data:
+    if not db.get_player_stats(user_id):
         await ctx.send("You don't have an account. Please create one using !createaccount.")
         return
-
-    last_withdrawal = user_data['last_withdrawal']
-    can_withdraw = (last_withdrawal is None or current_time - last_withdrawal >= timedelta(hours=1))
+    can_withdraw = can_user_withdraw(user_id)
 
     if can_withdraw:
         # Update chip count and last withdrawal timestamp
-        new_chips = user_data['chip_count'] + 1000
-        update_query = """
-        UPDATE users SET chip_count = %s, last_withdrawal = %s WHERE discord_id = %s
-        """
-        cursor.execute(update_query, (new_chips, current_time, user_id))
-        db.commit()
+        db.deposit(user_id, 1000)
+        db.update_last_withdraw(user_id, current_time)
         await ctx.send("You have successfully withdrawn 1000 chips!")
     else:
         # Calculate time remaining until the next possible withdrawal
-        time_remaining = timedelta(hours=1) - (current_time - last_withdrawal)
+        time_remaining = timedelta(hours=1) - (current_time - db.get_last_withdraw(user_id))
         minutes, seconds = divmod(time_remaining.seconds, 60)
         await ctx.send(f"You must wait {minutes} minutes and {seconds} seconds before you can withdraw again.")
     print("withdraw called")
+
+def can_user_withdraw(discord_id):
+    current_time = datetime.utcnow()
+    last_withdrawal = db.get_last_withdraw(discord_id)
+    return (last_withdrawal is None or current_time - last_withdrawal >= timedelta(hours=1))
 
 
 @bot.command(help="Shows the card images for a game of blackjack.")
@@ -189,8 +167,8 @@ async def blackjack(ctx, wager: int = 0):
 
     # Check if the user has an account and sufficient chips
     check_query = "SELECT chip_count FROM users WHERE discord_id = %s"
-    cursor.execute(check_query, (ctx.author.id,))
-    result = cursor.fetchone()
+    db.cursor.execute(check_query, (ctx.author.id,))
+    result = db.cursor.fetchone()
     
     if not result:
         await ctx.send("You don't have an account. Please create one using !createaccount.")
@@ -273,8 +251,8 @@ async def end_game(ctx, player_hand, dealer_hand, wager):
 
 def change_chips(user_id, amount):
     update_query = "UPDATE users SET chip_count = chip_count + %s WHERE discord_id = %s"
-    cursor.execute(update_query, (amount, user_id))
-    db.commit()
+    db.cursor.execute(update_query, (amount, user_id))
+    db.db.commit()
 
 suits = ['Spades', 'Hearts', 'Diamonds', 'Clubs']
 values = ['Ace', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'Jack', 'Queen', 'King']
@@ -325,18 +303,23 @@ async def end_game(ctx, player_hand, dealer_hand, wager):
     if player_value > 21 or (dealer_value <= 21 and dealer_value > player_value):
         result_message = "You lost!"
         update_stats = "UPDATE users SET losses = losses + 1, chip_count = chip_count - %s WHERE discord_id = %s"
-        update_values = (-wager, user_id)
+        # update_values = (-wager, user_id)
+        db.blackjack_result("LOSS", user_id, -wager)
     elif player_value == 21 and len(player_hand) == 2 and dealer_value != 21:
         result_message = "Blackjack! You win!"
         update_stats = "UPDATE users SET wins = wins + 1, chip_count = chip_count + %s WHERE discord_id = %s"
-        update_values = (int(1.5 * wager), user_id)
+        # update_values = (int(1.5 * wager), user_id)
+        db.blackjack_result("WIN", user_id, int(1.5 * wager))
     else:
         result_message = "You win!"
         update_stats = "UPDATE users SET wins = wins + 1, chip_count = chip_count + %s WHERE discord_id = %s"
-        update_values = (wager * 2, user_id)
+        # update_values = (wager * 2, user_id)
+        db.blackjack_result("WIN", user_id, wager * 2)
+    
+    
 
-    cursor.execute(update_stats, update_values)
-    db.commit()
+    # db.cursor.execute(update_stats, update_values)
+    # db.db.commit()
     await ctx.send(result_message)
 
 TOKEN = os.environ.get('BOT_TOKEN')
