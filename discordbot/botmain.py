@@ -137,7 +137,7 @@ async def withdraw(ctx):
     print("withdraw called")
 
 def can_user_withdraw(discord_id):
-    current_time = datetime.utcnow()
+    current_time = datetime.now(datetime.UTC)
     last_withdrawal = db.get_last_withdraw(discord_id)
     return (last_withdrawal is None or current_time - last_withdrawal >= timedelta(hours=1))
 
