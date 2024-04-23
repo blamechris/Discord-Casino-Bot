@@ -8,8 +8,10 @@ import os
 import asyncio
 from datetime import datetime, timedelta
 from card_images import card_mapping
+import time
 
 from database import *
+from roulette import *
 
 load_dotenv()  # This loads the environment variables from .env
 
@@ -19,13 +21,19 @@ bot = commands.Bot(command_prefix='!', intents=intents) #initialize bot using '!
 
 # Connect to the MySQL server using environment variables
 db = database()
+rt = roulette(db)
 
 
 @bot.command(help="Create an account to start playing games and rank.")
 async def createaccount(ctx):
     # Add user to the database
-    db.create_account(ctx.author.id, ctx.author.name)
-    print("createaccount called")
+    user_data = db.get_player_stats(ctx.author.id)
+    if(user_data):
+        await ctx.send("You already have an account")
+    else:
+        db.create_account(ctx.author.id, ctx.author.name)
+        await ctx.send("Welcome to the table")
+        print("createaccount called")
 
 
 @bot.command(help="Displays your current stats, username, and your rank based on the account creation order (Will update to track highscore stuff).")
@@ -309,6 +317,84 @@ async def end_game(ctx, player_hand, dealer_hand, wager):
         db.blackjack_result("WIN", user_id, wager * 2)
     
     await ctx.send(result_message)
+
+@bot.command(help="Places a wager on roulette.")
+async def roulette(ctx, wager: int = 0):
+    # Check if the wager was provided
+    if wager is None:
+        await ctx.send("Please include a wager amount with the command. Example: `!roulette 50`")
+        return
+
+    # Check if the wager is a valid number
+    if wager <= 0:
+        await ctx.send("Your wager must be a positive number.")
+        return
+
+    # Check if the user has an account and sufficient chips
+    result = db.get_player_stats(ctx.author.id)
+    
+    if not result:
+        await ctx.send("You don't have an account. Please create one using !createaccount.")
+        return
+
+    if result['chip_count'] < wager or wager <= 0:
+        await ctx.send("You do not have enough chips or your wager is invalid.")
+        return
+    
+    await ctx.send("How do you want to bet?")   
+    await ctx.send("""```
+    Straight-up
+    Split
+    Street
+    Corner
+    Six-line
+    1st-Column
+    2nd-Column
+    3rd-Column
+    1st-Dozen
+    2nd-Dozen
+    3rd-Dozen
+    Odd
+    Even
+    Red
+    Black
+    1-18
+    19-36```""")
+    
+    while True:
+        msg = await bot.wait_for('message', check=lambda m: m.author == ctx.author and m.content.lower() in ['straight-up','split','street','corner','six-line',
+                                                                                                            '1st-column','2nd-column','3rd-column',
+                                                                                                            '1st-dozen','2nd-dozen','3rd-dozen',
+                                                                                                            'odd','even','red','black',
+                                                                                                            '1-18','19-36'])
+        if(msg):
+            break
+    bet_type = msg.content
+    secondary_choices = ('straight-up','split','street','corner','six-line')
+    if(msg.content in secondary_choices):
+        await ctx.send("https://cdn.discordapp.com/attachments/888221383769870356/1232149405419704380/RouletteOptions.png?ex=6628680e&is=6627168e&hm=413e3eb8b4ea1807f9a085114fa9b913de44042b5cdf39e0f7bda6564f7af202&")
+        await ctx.send("Place your bet")
+        while True:
+            msg = await bot.wait_for('message', check=lambda m: m.author == ctx.author)
+            is_int = False
+            if(msg):            
+                try:
+                    int(msg.content)
+                    is_int = True
+                except ValueError:
+                    {}
+            if(is_int):
+                break
+        await ctx.send("You placed a bet on " + bet_type + " on " + msg.content)
+        rt.add_player(ctx.author.id, wager, bet_type, int(msg.content))
+        results = rt.spin_roulette()
+        await ctx.send("The winning number is " + str(results[1]))
+        return
+    await ctx.send("You placed a bet on " + msg.content)
+    rt.add_player(ctx.author.id, wager, bet_type, 0)
+    results = rt.spin_roulette()
+    await ctx.send("The winning number is " + str(results[1]))
+        
 
 TOKEN = os.environ.get('BOT_TOKEN')
 
